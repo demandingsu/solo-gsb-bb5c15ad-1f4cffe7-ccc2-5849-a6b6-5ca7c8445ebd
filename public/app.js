@@ -60,11 +60,12 @@ function renderSuccess(data) {
 
   const stats = data.stats;
   resultSummary.textContent =
-    `共 ${stats.total} 条；${stats.moved} 条时间变化，${stats.extended} 条因最短时长/CPS 被延长；` +
-    `相邻字幕最小间隔 ${stats.minGapMs} ms。`;
+    `共 ${stats.total} 条（锁定 ${stats.locked} 条）；${stats.moved} 条时间变化，` +
+    `${stats.extended} 条因最短时长/CPS 被延长；相邻字幕最小间隔 ${stats.minGapMs} ms。`;
 
   currentFixedSrt = data.fixedSrt;
-  renderRows(data.originalCues, data.fixedCues, new Set());
+  const lockedIds = new Set(data.options?.lockedIndices ?? []);
+  renderRows(data.originalCues, data.fixedCues, new Set(), lockedIds);
   resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
@@ -100,19 +101,33 @@ function renderConflict(data) {
     conflictBox.appendChild(meta);
   }
 
+  if (Array.isArray(conflict.lockedIndices) && conflict.lockedIndices.length > 0) {
+    const locks = document.createElement('p');
+    locks.className = 'conflict-meta';
+    locks.textContent =
+      `冲突段中的锁定字幕：第 ${conflict.lockedIndices.join('、')} 条` +
+      '（原始起止时间不可移动）。';
+    conflictBox.appendChild(locks);
+  }
+
   const ids = new Set(conflict.cues.map((cue) => cue.index));
-  renderRows(data.originalCues, null, ids);
+  const lockedIds = new Set(data.options?.lockedIndices ?? []);
+  renderRows(data.originalCues, null, ids, lockedIds);
   resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-function renderRows(originalCues, fixedCues, conflictIds) {
+function renderRows(originalCues, fixedCues, conflictIds, lockedIds = new Set()) {
   resultBody.replaceChildren();
 
   originalCues.forEach((original, index) => {
     const fixed = fixedCues ? fixedCues[index] : null;
+    const isLocked = lockedIds.has(original.index) || Boolean(fixed?.locked);
     const row = document.createElement('tr');
     if (conflictIds.has(original.index)) {
       row.classList.add('conflict-row');
+    }
+    if (isLocked) {
+      row.classList.add('locked-row');
     }
 
     addCell(row, '', String(original.index));
@@ -137,26 +152,46 @@ function renderRows(originalCues, fixedCues, conflictIds) {
     const changeCell = document.createElement('td');
     if (fixed) {
       const moved = fixed.startShift !== 0 || fixed.endShift !== 0;
-      const badge = document.createElement('span');
-      badge.className = `badge ${moved ? 'moved' : 'same'}`;
-      badge.textContent = moved ? '已调整' : '未变';
-      changeCell.appendChild(badge);
-
-      if (moved) {
+      if (isLocked) {
+        const badge = document.createElement('span');
+        badge.className = 'badge locked';
+        badge.textContent = '已锁定';
+        changeCell.appendChild(badge);
         const detail = document.createElement('div');
         detail.className = 'shift';
-        detail.textContent =
-          `开始 ${shiftLabel(fixed.startShift / 1)}；` +
-          `结束 ${shiftLabel(fixed.endShift)}`;
+        detail.textContent = '保留原始起止时间';
         changeCell.appendChild(detail);
+      } else {
+        const badge = document.createElement('span');
+        badge.className = `badge ${moved ? 'moved' : 'same'}`;
+        badge.textContent = moved ? '已调整' : '未变';
+        changeCell.appendChild(badge);
+
+        if (moved) {
+          const detail = document.createElement('div');
+          detail.className = 'shift';
+          detail.textContent =
+            `开始 ${shiftLabel(fixed.startShift / 1)}；` +
+            `结束 ${shiftLabel(fixed.endShift)}`;
+          changeCell.appendChild(detail);
+        }
       }
     } else if (conflictIds.has(original.index)) {
+      const wrap = document.createElement('div');
+      wrap.className = 'badge-stack';
       const badge = document.createElement('span');
       badge.className = 'badge conflict';
       badge.textContent = '冲突';
-      changeCell.appendChild(badge);
+      wrap.appendChild(badge);
+      if (isLocked) {
+        const lockedBadge = document.createElement('span');
+        lockedBadge.className = 'badge locked';
+        lockedBadge.textContent = '已锁定';
+        wrap.appendChild(lockedBadge);
+      }
+      changeCell.appendChild(wrap);
     } else {
-      changeCell.textContent = '—';
+      changeCell.textContent = isLocked ? '锁定' : '—';
     }
     row.appendChild(changeCell);
 

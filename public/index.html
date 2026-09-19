@@ -12,8 +12,8 @@
       <p class="eyebrow">SRT Timing Repair</p>
       <h1>字幕时轴修复与场景切点保护</h1>
       <p class="subtitle">
-        上传 SRT，声明不可跨越的场景切点；系统会同时满足最短显示时长、最大每秒字符数与相邻最小间隔，
-        并在无解时定位最短的冲突字幕段。
+        上传 SRT，声明不可跨越的场景切点并锁定关键字幕；系统会同时满足最短显示时长、最大每秒字符数与相邻最小间隔，
+        锁定项作为时间锚点参与联动，无解时定位最短的冲突字幕段。
       </p>
     </div>
   </header>
@@ -49,6 +49,15 @@
           <small>切点之间的字幕只能在原区间内联动调整；字幕时间不得覆盖任何切点。</small>
         </label>
 
+        <label class="field">
+          <span>锁定字幕编号</span>
+          <input name="lockedIndices" type="text" placeholder="例如：2, 5-8, 12" autocomplete="off">
+          <small>
+            可填单个编号或用 <code>-</code> 表示范围，多个编号用逗号、空格或顿号分隔。
+            被锁定的字幕<strong>保留原始起止时间</strong>，并作为时间锚点双向约束相邻字幕的联动调整。
+          </small>
+        </label>
+
         <button id="submit-button" type="submit">分析并修复时轴</button>
         <p id="form-message" class="message" role="alert" hidden></p>
       </form>
@@ -61,8 +70,8 @@
         <li>相邻字幕结束与下一条开始之间保留最小间隔。</li>
         <li>调整后严格保持原有字幕顺序。</li>
         <li>任何字幕都不能覆盖场景切点；跨越切点的字幕按其中点归属到原始侧。</li>
-        <li>有解时采用最小二乘意义上尽量少偏离原开始时间的联动方案。</li>
-        <li>无解时返回造成冲突的最短短语段，并说明需求时长、可用时长与超出量。</li>
+        <li>锁定字幕的原始起止时间保持不变，并作为双边锚点向两侧传播约束；有解时其他字幕在全部可行方案中尽量少偏离原始时轴。</li>
+        <li>无解时返回包含相关锁定锚点的最短连续冲突段，说明需求/可用时间及冲突的锁定字幕。</li>
       </ul>
     </section>
   </main>

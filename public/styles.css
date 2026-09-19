@@ -316,8 +316,24 @@ tr:last-child td {
   color: var(--danger-text);
 }
 
+.badge.locked {
+  background: var(--warn-bg);
+  color: #8a5a00;
+  border: 1px solid #e3b341;
+}
+
+.badge-stack {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+}
+
 tr.conflict-row {
   background: #fff5f5;
+}
+
+tr.locked-row:not(.conflict-row) {
+  background: #fffdf4;
 }
 
 .shift {

@@ -6,6 +6,7 @@ const path = require('path');
 
 const { parseSrt, serializeSrt } = require('./src/srt');
 const { parseFlexibleTime } = require('./src/time');
+const { parseLockedIndices } = require('./src/lock');
 const { DEFAULTS, fixSubtitles } = require('./src/fixer');
 
 const app = express();
@@ -78,17 +79,22 @@ app.post('/api/fix', upload.single('subtitle'), (req, res) => {
 
     const content = req.file.buffer.toString('utf8');
     const originalCues = parseSrt(content);
+    const lockedIndices = parseLockedIndices(
+      req.body.lockedIndices,
+      originalCues.length
+    );
     const result = fixSubtitles(originalCues, cuts, {
       minDurationMs: Math.round(minDurationSeconds * 1000),
       maxCps,
       minGapMs,
+      lockedIndices,
     });
 
     if (!result.feasible) {
       return res.status(422).json({
         feasible: false,
         cuts,
-        options: { minDurationSeconds, maxCps, minGapMs },
+        options: { minDurationSeconds, maxCps, minGapMs, lockedIndices },
         originalCues,
         conflict: result.conflict,
       });
@@ -97,7 +103,7 @@ app.post('/api/fix', upload.single('subtitle'), (req, res) => {
     return res.json({
       feasible: true,
       cuts,
-      options: { minDurationSeconds, maxCps, minGapMs },
+      options: { minDurationSeconds, maxCps, minGapMs, lockedIndices },
       originalCues,
       fixedCues: result.cues,
       fixedSrt: serializeSrt(result.cues),
@@ -112,8 +118,10 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true });
 });
 
-app.listen(PORT, () => {
-  console.log(`SRT 时轴修复工具已启动：http://localhost:${PORT}`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`SRT 时轴修复工具已启动：http://localhost:${PORT}`);
+  });
+}
 
 module.exports = app;

@@ -1,0 +1,17 @@
+{
+  "name": "srt-time-fixer",
+  "version": "1.0.0",
+  "description": "修复 SRT 字幕时轴：按最短显示时长、最大每秒字符数与最小间隔联动调整，并避开场景切点。",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "multer": "^2.4.0"
+  }
+}

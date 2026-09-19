@@ -53,6 +53,36 @@ function parseCuts(text) {
   return uniqueSorted;
 }
 
+/**
+ * 解析锁定字幕编号：从 1 开始的正整数，
+ * 可用换行、空格、逗号、分号或顿号分隔，重复编号自动去重。
+ */
+function parseLocks(text, cueCount) {
+  const pieces = String(text ?? '')
+    .split(/[\s,;，；、]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  const seen = new Set();
+  const indices = [];
+  for (const piece of pieces) {
+    if (!/^\d+$/.test(piece)) {
+      throw new Error(
+        `锁定字幕编号无效：${piece}（应为正整数，多个编号用逗号、空格或换行分隔）。`
+      );
+    }
+    const value = Number(piece);
+    if (value < 1 || value > cueCount) {
+      throw new Error(`锁定字幕编号 ${value} 超出范围（共 ${cueCount} 条字幕）。`);
+    }
+    if (!seen.has(value)) {
+      seen.add(value);
+      indices.push(value);
+    }
+  }
+  return indices.sort((a, b) => a - b);
+}
+
 app.post('/api/fix', upload.single('subtitle'), (req, res) => {
   try {
     if (!req.file) {
@@ -78,18 +108,27 @@ app.post('/api/fix', upload.single('subtitle'), (req, res) => {
 
     const content = req.file.buffer.toString('utf8');
     const originalCues = parseSrt(content);
+    const lockedIndices = parseLocks(req.body.locks, originalCues.length);
     const result = fixSubtitles(originalCues, cuts, {
       minDurationMs: Math.round(minDurationSeconds * 1000),
       maxCps,
       minGapMs,
+      lockedIndices,
     });
+
+    const lockedSet = new Set(lockedIndices);
+    const annotatedOriginalCues = originalCues.map((cue) => ({
+      ...cue,
+      locked: lockedSet.has(cue.index),
+    }));
 
     if (!result.feasible) {
       return res.status(422).json({
         feasible: false,
         cuts,
         options: { minDurationSeconds, maxCps, minGapMs },
-        originalCues,
+        lockedIndices,
+        originalCues: annotatedOriginalCues,
         conflict: result.conflict,
       });
     }
@@ -98,7 +137,8 @@ app.post('/api/fix', upload.single('subtitle'), (req, res) => {
       feasible: true,
       cuts,
       options: { minDurationSeconds, maxCps, minGapMs },
-      originalCues,
+      lockedIndices,
+      originalCues: annotatedOriginalCues,
       fixedCues: result.cues,
       fixedSrt: serializeSrt(result.cues),
       stats: result.stats,
@@ -112,8 +152,10 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true });
 });
 
-app.listen(PORT, () => {
-  console.log(`SRT 时轴修复工具已启动：http://localhost:${PORT}`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`SRT 时轴修复工具已启动：http://localhost:${PORT}`);
+  });
+}
 
 module.exports = app;

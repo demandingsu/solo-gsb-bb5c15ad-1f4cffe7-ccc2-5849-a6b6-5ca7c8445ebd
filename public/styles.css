@@ -316,7 +316,20 @@ tr:last-child td {
   color: var(--danger-text);
 }
 
+.badge.locked {
+  background: var(--warn-bg);
+  color: #8a5a00;
+}
+
 tr.conflict-row {
+  background: #fff5f5;
+}
+
+tr.locked-row {
+  background: #fffdf4;
+}
+
+tr.locked-row.conflict-row {
   background: #fff5f5;
 }
 

@@ -105,6 +105,74 @@ function summarizeCue(cue, requiredDuration) {
     text: cue.text,
     chars: cue.chars,
     requiredDuration,
+    locked: Boolean(cue.locked),
+  };
+}
+
+/** 冲突段下端边界的文字描述：时间轴起点、某个切点，或锁定锚点的原始开始。 */
+function describeLowerBoundary(cue, group, cuts) {
+  if (cue.locked) {
+    return `锁定字幕第 ${cue.index} 条的原始开始 ${formatTime(cue.start)}`;
+  }
+  if (group === 0) {
+    return '时间轴起点 00:00:00,000';
+  }
+  return `第 ${group} 个切点 ${formatTime(cuts[group - 1])}`;
+}
+
+/** 冲突段上端边界的文字描述：某个切点，或锁定锚点的原始结束。 */
+function describeUpperBoundary(cue, group, cuts) {
+  if (cue.locked) {
+    return `锁定字幕第 ${cue.index} 条的原始结束 ${formatTime(cue.end)}`;
+  }
+  return `第 ${group + 1} 个切点 ${formatTime(cuts[group])}`;
+}
+
+/**
+ * 锁定字幕的原始区间覆盖了场景切点：锚点不可移动，直接无解。
+ * 所需时间为锁定时长；可用时间为从锚点固定端看、切点内侧可容纳的跨度。
+ */
+function buildLockedSceneConflict(cue, group, cuts, sceneLower, sceneUpper) {
+  const requiredMs = cue.requiredDuration;
+  let availableMs;
+  if (cue.start < sceneLower && cue.end > sceneUpper) {
+    availableMs = sceneUpper - sceneLower;
+  } else if (cue.start < sceneLower) {
+    availableMs = cue.end - sceneLower;
+  } else {
+    availableMs = sceneUpper - cue.start;
+  }
+  const overflowMs = requiredMs - availableMs;
+
+  const crossedCuts = cuts.filter((cut) => cue.start < cut && cut < cue.end);
+  const lowerLabel =
+    group === 0 ? '时间轴起点 00:00:00,000' : `第 ${group} 个切点 ${formatTime(sceneLower)}`;
+  const upperLabel = Number.isFinite(sceneUpper)
+    ? `第 ${group + 1} 个切点 ${formatTime(sceneUpper)}`
+    : '时间轴终点';
+
+  const reason =
+    `锁定字幕第 ${cue.index} 条必须保留原始时间 ` +
+    `${formatTime(cue.start)}–${formatTime(cue.end)}（时长 ${requiredMs} ms），` +
+    `但该区间覆盖了场景切点 ${crossedCuts.map(formatTime).join('、')}。` +
+    '锁定字幕作为双向时间锚点不可移动：' +
+    `按其中点归属的区间（${lowerLabel} 至 ${upperLabel}），` +
+    `从锚点位置最多可容纳 ${availableMs} ms，少于锁定时长 ${requiredMs} ms，` +
+    `超出 ${overflowMs} ms。请调整场景切点位置，或解除该字幕的锁定。`;
+
+  return {
+    feasible: false,
+    conflict: {
+      type: 'locked-scene',
+      fromIndex: cue.index,
+      toIndex: cue.index,
+      reason,
+      lockedIndices: [cue.index],
+      requiredMs,
+      availableMs,
+      overflowMs,
+      cues: [summarizeCue(cue, cue.requiredDuration)],
+    },
   };
 }
 
@@ -147,15 +215,34 @@ function findShortestCapacityConflict(transformedLower, transformedUpper) {
 
 function fixSubtitles(inputCues, cuts, inputOptions = {}) {
   const options = { ...DEFAULTS, ...inputOptions };
+
+  const lockedSet = new Set(options.lockedIndices ?? []);
+  if (lockedSet.size > 0) {
+    const knownIndices = new Set(inputCues.map((cue) => cue.index));
+    for (const lockIndex of lockedSet) {
+      if (!knownIndices.has(lockIndex)) {
+        throw new Error(
+          `锁定字幕编号 ${lockIndex} 不存在（共 ${inputCues.length} 条字幕）。`
+        );
+      }
+    }
+  }
+
   const cues = inputCues.map((cue, arrayIndex) => {
-    const requiredDuration = Math.max(
-      cue.duration,
-      options.minDurationMs,
-      ceilDiv(cue.chars * 1000, options.maxCps)
-    );
+    const locked = lockedSet.has(cue.index);
+    // 锁定字幕保留原始起止时间：占用区间固定为原始时长，
+    // 不参与最短时长/CPS 延长。
+    const requiredDuration = locked
+      ? cue.duration
+      : Math.max(
+          cue.duration,
+          options.minDurationMs,
+          ceilDiv(cue.chars * 1000, options.maxCps)
+        );
     return {
       ...cue,
       arrayIndex,
+      locked,
       originalDuration: cue.duration,
       requiredDuration,
     };
@@ -170,9 +257,30 @@ function fixSubtitles(inputCues, cuts, inputOptions = {}) {
   const upper = new Array(count);
 
   for (let i = 0; i < count; i += 1) {
+    if (cues[i].locked) {
+      // 锁定字幕是双边时间锚点：开始时间的下界与上界都钉死在原始值，
+      // 形成单调链上的点约束，随有界单调回归向两侧传播，
+      // 而不是先求解再覆盖时间。
+      lower[i] = cues[i].start;
+      upper[i] = cues[i].start;
+    } else {
+      const group = groups[i];
+      lower[i] = group === 0 ? 0 : cuts[group - 1];
+      upper[i] =
+        group < cuts.length ? cuts[group] - cues[i].requiredDuration : Infinity;
+    }
+  }
+
+  // 锁定字幕不可移动，若其原始区间覆盖场景切点则直接无解。
+  for (let i = 0; i < count; i += 1) {
+    const cue = cues[i];
+    if (!cue.locked) continue;
     const group = groups[i];
-    lower[i] = group === 0 ? 0 : cuts[group - 1];
-    upper[i] = group < cuts.length ? cuts[group] - cues[i].requiredDuration : Infinity;
+    const sceneLower = group === 0 ? 0 : cuts[group - 1];
+    const sceneUpper = group < cuts.length ? cuts[group] : Infinity;
+    if (cue.start < sceneLower || cue.end > sceneUpper) {
+      return buildLockedSceneConflict(cue, group, cuts, sceneLower, sceneUpper);
+    }
   }
 
   // o_i 为从第 0 条依次排到第 i 条开始位置的累计偏移。
@@ -216,9 +324,14 @@ function fixSubtitles(inputCues, cuts, inputOptions = {}) {
     const q = conflictLocation.to;
     const firstGroup = groups[p];
     const lastGroup = groups[q];
+    const lockedInSegment = [];
+    for (let i = p; i <= q; i += 1) {
+      if (cues[i].locked) lockedInSegment.push(cues[i].index);
+    }
 
     let type = 'capacity';
     let reason;
+    let metrics = {};
 
     if (q === p + 1 && firstGroup > lastGroup) {
       type = 'scene-order';
@@ -226,35 +339,50 @@ function fixSubtitles(inputCues, cuts, inputOptions = {}) {
         `第 ${cues[p].index} 条字幕的原始中点位于某个切点之后，` +
         `第 ${cues[q].index} 条字幕却必须位于更早的切点之前；` +
         '保持字幕顺序与禁止跨越切点无法同时满足。请人工拆分、删减或改排这两条字幕。';
+      if (lockedInSegment.length > 0) {
+        reason += `其中第 ${lockedInSegment.join('、')} 条为锁定字幕，起止时间不可调整。`;
+      }
     } else {
       const lowerMs = lower[p];
-      const upperCut = cuts[lastGroup];
+      // 段右端的可用终点：未锁定字幕受切点限制，锁定字幕即其原始结束。
+      const upperEndMs = upper[q] + cues[q].requiredDuration;
       const requiredMs =
         offsets[q] - offsets[p] + cues[q].requiredDuration;
-      const availableMs = upperCut - lowerMs;
+      const availableMs = upperEndMs - lowerMs;
       const overflowMs = requiredMs - availableMs;
-      const lowerLabel = firstGroup === 0
-        ? '时间轴起点 00:00:00,000'
-        : `第 ${firstGroup} 个切点 ${formatTime(lowerMs)}`;
-      const upperLabel = `${lastGroup + 1} 个切点 ${formatTime(upperCut)}`;
+      const lowerLabel = describeLowerBoundary(cues[p], firstGroup, cuts);
+      const upperLabel = describeUpperBoundary(cues[q], lastGroup, cuts);
 
       if (p === q) {
         reason =
           `第 ${cues[p].index} 条字幕按最短显示时长/每秒字符数至少需要 ${requiredMs} ms，` +
-          `但其按原始中点所在区间（${lowerLabel} 至第 ${upperLabel}）只有 ${availableMs} ms，` +
+          `但其按原始中点所在区间（${lowerLabel} 至 ${upperLabel}）只有 ${availableMs} ms，` +
           `超出 ${overflowMs} ms。`;
       } else {
         reason =
           `第 ${cues[p].index}–${cues[q].index} 条是造成无解的最短连续字幕段：` +
           `在满足各条最短时长和相邻最小间隔 ${options.minGapMs} ms 后，` +
           `该段的时间联动需求至少为 ${requiredMs} ms，` +
-          `但从 ${lowerLabel} 到第 ${upperLabel} 的外层可用跨度只有 ${availableMs} ms，` +
+          `但从 ${lowerLabel} 到 ${upperLabel} 的外层可用跨度只有 ${availableMs} ms，` +
           `超出 ${overflowMs} ms。`;
       }
 
       if (firstGroup !== lastGroup) {
         reason += ' 这组字幕跨越了一个或多个切点，各字幕还必须分别留在切点两侧。';
       }
+      if (lockedInSegment.length > 0) {
+        reason +=
+          ` 冲突涉及的锁定字幕：第 ${lockedInSegment.join('、')} 条，` +
+          '其原始起止时间作为锚点不可移动。';
+      }
+
+      metrics = {
+        requiredMs,
+        availableMs,
+        overflowMs,
+        lowerMs,
+        upperMs: upperEndMs,
+      };
     }
 
     return {
@@ -264,21 +392,11 @@ function fixSubtitles(inputCues, cuts, inputOptions = {}) {
         fromIndex: cues[p].index,
         toIndex: cues[q].index,
         reason,
+        lockedIndices: lockedInSegment,
         cues: cues
           .slice(p, q + 1)
           .map((cue) => summarizeCue(cue, cue.requiredDuration)),
-        ...(type === 'capacity'
-          ? {
-              requiredMs:
-                offsets[q] - offsets[p] + cues[q].requiredDuration,
-              availableMs: cuts[lastGroup] - lower[p],
-              overflowMs:
-                offsets[q] - offsets[p] + cues[q].requiredDuration -
-                (cuts[lastGroup] - lower[p]),
-              lowerMs: lower[p],
-              upperMs: cuts[lastGroup],
-            }
-          : {}),
+        ...metrics,
       },
     };
   }
@@ -292,6 +410,10 @@ function fixSubtitles(inputCues, cuts, inputOptions = {}) {
   if (regression.error) {
     // 正常情况下前置的最短窗口检查已经给出更友好的诊断。
     const { start, end } = regression.error;
+    const lockedInSegment = [];
+    for (let i = start; i <= end; i += 1) {
+      if (cues[i].locked) lockedInSegment.push(cues[i].index);
+    }
     return {
       feasible: false,
       conflict: {
@@ -299,6 +421,7 @@ function fixSubtitles(inputCues, cuts, inputOptions = {}) {
         fromIndex: cues[start].index,
         toIndex: cues[end].index,
         reason: `第 ${cues[start].index}–${cues[end].index} 条字幕的硬约束交集为空。`,
+        lockedIndices: lockedInSegment,
         cues: cues
           .slice(start, end + 1)
           .map((cue) => summarizeCue(cue, cue.requiredDuration)),
@@ -336,6 +459,9 @@ function validateResult(cues, cuts, options) {
     if (!Number.isInteger(cue.start) || !Number.isInteger(cue.end) || cue.end <= cue.start) {
       throw new Error(`内部错误：第 ${cue.index} 条调整结果无效。`);
     }
+    if (cue.locked && (cue.startShift !== 0 || cue.endShift !== 0)) {
+      throw new Error(`内部错误：第 ${cue.index} 条锁定字幕的起止时间被改动。`);
+    }
     if (cue.start < 0) {
       throw new Error(`内部错误：第 ${cue.index} 条早于时间轴起点。`);
     }
@@ -356,9 +482,11 @@ function validateResult(cues, cuts, options) {
 function buildStats(cues, options) {
   let moved = 0;
   let extended = 0;
+  let locked = 0;
   let totalAbsShift = 0;
 
   for (const cue of cues) {
+    if (cue.locked) locked += 1;
     if (cue.startShift !== 0 || cue.endShift !== 0) moved += 1;
     if (cue.requiredDuration > cue.originalDuration) extended += 1;
     totalAbsShift += Math.abs(cue.startShift) + Math.abs(cue.endShift);
@@ -368,6 +496,7 @@ function buildStats(cues, options) {
     total: cues.length,
     moved,
     extended,
+    locked,
     totalAbsShift,
     minGapMs: options.minGapMs,
   };

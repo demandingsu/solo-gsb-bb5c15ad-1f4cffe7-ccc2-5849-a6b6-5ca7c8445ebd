@@ -51,6 +51,13 @@ function addCell(row, className, text) {
   return cell;
 }
 
+function makeBadge(kind, text) {
+  const badge = document.createElement('span');
+  badge.className = `badge ${kind}`;
+  badge.textContent = text;
+  return badge;
+}
+
 function renderSuccess(data) {
   resultSection.hidden = false;
   conflictBox.hidden = true;
@@ -59,9 +66,13 @@ function renderSuccess(data) {
   resultTitle.textContent = '修复完成';
 
   const stats = data.stats;
-  resultSummary.textContent =
+  let summary =
     `共 ${stats.total} 条；${stats.moved} 条时间变化，${stats.extended} 条因最短时长/CPS 被延长；` +
     `相邻字幕最小间隔 ${stats.minGapMs} ms。`;
+  if (stats.locked > 0) {
+    summary += ` ${stats.locked} 条锁定字幕作为锚点保持原始起止时间。`;
+  }
+  resultSummary.textContent = summary;
 
   currentFixedSrt = data.fixedSrt;
   renderRows(data.originalCues, data.fixedCues, new Set());
@@ -100,6 +111,15 @@ function renderConflict(data) {
     conflictBox.appendChild(meta);
   }
 
+  if (Array.isArray(conflict.lockedIndices) && conflict.lockedIndices.length > 0) {
+    const lockedMeta = document.createElement('p');
+    lockedMeta.className = 'conflict-meta';
+    lockedMeta.textContent =
+      `冲突的锁定字幕：第 ${conflict.lockedIndices.join('、')} 条` +
+      '（锚点保持原始起止时间，不可移动）。';
+    conflictBox.appendChild(lockedMeta);
+  }
+
   const ids = new Set(conflict.cues.map((cue) => cue.index));
   renderRows(data.originalCues, null, ids);
   resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -113,6 +133,9 @@ function renderRows(originalCues, fixedCues, conflictIds) {
     const row = document.createElement('tr');
     if (conflictIds.has(original.index)) {
       row.classList.add('conflict-row');
+    }
+    if (original.locked) {
+      row.classList.add('locked-row');
     }
 
     addCell(row, '', String(original.index));
@@ -136,27 +159,34 @@ function renderRows(originalCues, fixedCues, conflictIds) {
 
     const changeCell = document.createElement('td');
     if (fixed) {
-      const moved = fixed.startShift !== 0 || fixed.endShift !== 0;
-      const badge = document.createElement('span');
-      badge.className = `badge ${moved ? 'moved' : 'same'}`;
-      badge.textContent = moved ? '已调整' : '未变';
-      changeCell.appendChild(badge);
+      if (fixed.locked) {
+        changeCell.appendChild(makeBadge('locked', '已锁定'));
+      } else {
+        const moved = fixed.startShift !== 0 || fixed.endShift !== 0;
+        changeCell.appendChild(makeBadge(moved ? 'moved' : 'same', moved ? '已调整' : '未变'));
 
-      if (moved) {
-        const detail = document.createElement('div');
-        detail.className = 'shift';
-        detail.textContent =
-          `开始 ${shiftLabel(fixed.startShift / 1)}；` +
-          `结束 ${shiftLabel(fixed.endShift)}`;
-        changeCell.appendChild(detail);
+        if (moved) {
+          const detail = document.createElement('div');
+          detail.className = 'shift';
+          detail.textContent =
+            `开始 ${shiftLabel(fixed.startShift / 1)}；` +
+            `结束 ${shiftLabel(fixed.endShift)}`;
+          changeCell.appendChild(detail);
+        }
       }
-    } else if (conflictIds.has(original.index)) {
-      const badge = document.createElement('span');
-      badge.className = 'badge conflict';
-      badge.textContent = '冲突';
-      changeCell.appendChild(badge);
     } else {
-      changeCell.textContent = '—';
+      let hasBadge = false;
+      if (conflictIds.has(original.index)) {
+        changeCell.appendChild(makeBadge('conflict', '冲突'));
+        hasBadge = true;
+      }
+      if (original.locked) {
+        changeCell.appendChild(makeBadge('locked', '已锁定'));
+        hasBadge = true;
+      }
+      if (!hasBadge) {
+        changeCell.textContent = '—';
+      }
     }
     row.appendChild(changeCell);
 

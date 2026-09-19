@@ -134,3 +134,137 @@ test('使用默认参数', () => {
     minGapMs: 80,
   });
 });
+
+test('锁定字幕保留原始起止时间，后续字幕绕开锚点联动', () => {
+  const result = fixSubtitles(
+    [
+      cue(1, 0, 500, 'aaaaa'),
+      cue(2, 1000, 1500, 'bbbbb'),
+      cue(3, 1500, 2000, 'cccccccccccccccccccc'),
+    ],
+    [],
+    { minDurationMs: 500, maxCps: 10, minGapMs: 100, lockedIndices: [2] }
+  );
+
+  assert.equal(result.feasible, true);
+  assert.deepEqual(
+    result.cues.map((item) => [item.start, item.end]),
+    [[0, 500], [1000, 1500], [1600, 3600]]
+  );
+  assert.equal(result.cues[1].locked, true);
+  assert.equal(result.cues[1].startShift, 0);
+  assert.equal(result.cues[1].endShift, 0);
+});
+
+test('锁定字幕作为右侧锚点，前序字幕可提前让位', () => {
+  const result = fixSubtitles(
+    [
+      cue(1, 500, 1000, 'aaaaaaaaaa'),
+      cue(2, 1500, 2000, 'bbbbb'),
+    ],
+    [],
+    { minDurationMs: 500, maxCps: 10, minGapMs: 100, lockedIndices: [2] }
+  );
+
+  assert.equal(result.feasible, true);
+  assert.deepEqual(
+    result.cues.map((item) => [item.start, item.end]),
+    [[400, 1400], [1500, 2000]]
+  );
+});
+
+test('锁定字幕不参与最短时长与 CPS 延长', () => {
+  const result = fixSubtitles(
+    [cue(1, 1000, 1300, 'aaaaaaaaaaaaaaaaaaaa')],
+    [],
+    { minDurationMs: 500, maxCps: 5, minGapMs: 80, lockedIndices: [1] }
+  );
+
+  assert.equal(result.feasible, true);
+  assert.equal(result.cues[0].start, 1000);
+  assert.equal(result.cues[0].end, 1300);
+  assert.equal(result.cues[0].requiredDuration, 300);
+});
+
+test('两个锁定锚点间距不足时返回包含锚点的最短冲突段', () => {
+  const result = fixSubtitles(
+    [
+      cue(1, 0, 1000, 'aaaaa'),
+      cue(2, 1050, 2000, 'bbbbb'),
+    ],
+    [],
+    { minDurationMs: 500, maxCps: 100, minGapMs: 100, lockedIndices: [1, 2] }
+  );
+
+  assert.equal(result.feasible, false);
+  assert.equal(result.conflict.type, 'capacity');
+  assert.equal(result.conflict.fromIndex, 1);
+  assert.equal(result.conflict.toIndex, 2);
+  assert.deepEqual(result.conflict.lockedIndices, [1, 2]);
+  assert.equal(result.conflict.requiredMs, 2050);
+  assert.equal(result.conflict.availableMs, 2000);
+  assert.equal(result.conflict.overflowMs, 50);
+  assert.match(result.conflict.reason, /锁定字幕/);
+});
+
+test('锁定锚点与切点之间容量不足时标出相关锚点', () => {
+  const result = fixSubtitles(
+    [
+      cue(1, 0, 1000, 'aaaaa'),
+      cue(2, 1100, 1600, 'bbbbbbbbbbbbbbbbbbbb'),
+    ],
+    [3000],
+    { minDurationMs: 500, maxCps: 10, minGapMs: 100, lockedIndices: [1] }
+  );
+
+  assert.equal(result.feasible, false);
+  assert.equal(result.conflict.fromIndex, 1);
+  assert.equal(result.conflict.toIndex, 2);
+  assert.deepEqual(result.conflict.lockedIndices, [1]);
+  assert.equal(result.conflict.requiredMs, 3100);
+  assert.equal(result.conflict.availableMs, 3000);
+  assert.equal(result.conflict.overflowMs, 100);
+  assert.match(result.conflict.reason, /锁定字幕第 1 条/);
+  assert.match(result.conflict.reason, /切点/);
+});
+
+test('锁定字幕覆盖场景切点时返回 locked-scene 冲突', () => {
+  const result = fixSubtitles(
+    [cue(1, 500, 1500, 'aaaaa')],
+    [1000],
+    { minDurationMs: 500, maxCps: 100, minGapMs: 80, lockedIndices: [1] }
+  );
+
+  assert.equal(result.feasible, false);
+  assert.equal(result.conflict.type, 'locked-scene');
+  assert.equal(result.conflict.fromIndex, 1);
+  assert.equal(result.conflict.toIndex, 1);
+  assert.deepEqual(result.conflict.lockedIndices, [1]);
+  assert.equal(result.conflict.requiredMs, 1000);
+  assert.equal(result.conflict.availableMs, 500);
+  assert.equal(result.conflict.overflowMs, 500);
+  assert.match(result.conflict.reason, /锁定字幕第 1 条/);
+  assert.match(result.conflict.reason, /00:00:01,000/);
+});
+
+test('锁定不存在的字幕编号时抛出错误', () => {
+  assert.throws(
+    () => fixSubtitles([cue(1, 0, 100, 'a')], [], { lockedIndices: [2] }),
+    /锁定字幕编号 2 不存在/
+  );
+});
+
+test('统计信息包含锁定字幕数量', () => {
+  const result = fixSubtitles(
+    [
+      cue(1, 0, 500, 'aaaaa'),
+      cue(2, 1000, 1500, 'bbbbb'),
+    ],
+    [],
+    { minDurationMs: 500, maxCps: 100, minGapMs: 100, lockedIndices: [2] }
+  );
+
+  assert.equal(result.feasible, true);
+  assert.equal(result.stats.locked, 1);
+  assert.equal(result.stats.moved, 0);
+});
